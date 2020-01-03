@@ -11,6 +11,7 @@ import torch.optim.lr_scheduler
 import torch.cuda
 import argparse, os, sys
 import time
+from logger import Logger 
 from gspen.models import *
 
 np.random.seed(1)
@@ -210,7 +211,11 @@ class PairModel(nn.Module):
             else:
                 self.model = torch.nn.Parameter(torch.FloatTensor(26*26).uniform_(-0.5, 0.5))
 
+        #import pdb; pdb.set_trace()
+
     def forward(self, inputs):
+        #import pdb; pdb.set_trace()
+
         if self.use_better_pairs:
             pairs = []
             for i in range(4):
@@ -253,6 +258,10 @@ def test(model, dataset, params):
 
 
 def train(model, train_data, val_data, params):
+    # loggers
+    logger = Logger('./logs/'+ params['model'])
+
+    #############################################################
     gpu = params.get('gpu', False)
     batch_size = params.get('batch_size', 1000)
     training_scheduler = params.get('training_scheduler', None)
@@ -280,14 +289,22 @@ def train(model, train_data, val_data, params):
     best_word_acc = (0,0)
     best_word_acc_epoch = 0
     best_acc_epoch = -1
+    counter = 0
+
     for epoch in range(num_epochs):
         print("EPOCH", epoch+1, (end-start))
         if epoch%val_interval == 0:
             if epoch >= val_start:
                 train_results.append(test(model, train_data, params))
                 print("TRAIN RESULTS: ",train_results[-1])
+                logger.scalar_summary('train_char_acc', train_results[-1][0], epoch)
+                logger.scalar_summary('train_word_acc', train_results[-1][1], epoch)
+
                 val_results.append(test(model, val_data, params))
                 print("VAL RESULTS: ",val_results[-1])
+                logger.scalar_summary('val_char_acc', val_results[-1][0], epoch)
+                logger.scalar_summary('val_word_acc', val_results[-1][1], epoch)
+
                 if val_results[-1][0] > best_acc[0]:
                     best_acc = val_results[-1]
                     best_acc_epoch = epoch
@@ -315,7 +332,11 @@ def train(model, train_data, val_data, params):
             training_scheduler.step()
         start = time.time() 
         for batch_ind, all_inputs in enumerate(train_data_loader):
+            counter = counter + 1
             inputs, labels, onehot_labels = all_inputs
+
+            #import pdb; pdb.set_trace()
+
             if use_cross_ent:
                 if gpu:
                     inputs = inputs.cuda(async=True)
@@ -325,8 +346,14 @@ def train(model, train_data, val_data, params):
                 if gpu:
                     inputs = inputs.cuda(async=True)
                     onehot_labels = onehot_labels.cuda(async=True)
+
+                #import pdb; pdb.set_trace()
                 obj, inf_obj = model.calculate_obj(epoch, inputs, onehot_labels)
             print("\tBATCH %d OF %d: %f, %f"%(batch_ind+1, len(train_data_loader), obj.item(), inf_obj.item()))
+
+            logger.scalar_summary('obj', obj.item(), counter )
+            logger.scalar_summary('inf_obj', inf_obj.item(), counter )
+            
             obj.backward()
             if clip_grad is not None:
                 nn.utils.clip_grad_value_(model.parameters(), clip_grad)
@@ -336,10 +363,14 @@ def train(model, train_data, val_data, params):
             train_obj_vals.append(obj.item())
             train_inf_obj_vals.append(inf_obj.item())
         end = time.time()
+
+    
+
     train_results.append(test(model, train_data, params))
     print("FINAL TRAIN RESULTS: ",train_results[-1])
     val_results.append(test(model, val_data, params))
     print("FINAL VAL RESULTS: ",val_results[-1])
+    
     if val_results[-1][0] > best_acc[0]:
         best_acc = val_results[-1]
         best_acc_epoch = epoch
@@ -350,9 +381,12 @@ def train(model, train_data, val_data, params):
         best_word_acc_epoch = epoch
         print("NEW BEST WORD ACC FOUND, SAVING MODEL")
         save_model(model, working_dir, 'wordacc_model', params)
+
     print("BEST VAL WORD ACC (EPOCH %d): "%best_word_acc_epoch, best_word_acc)
     save_model(model, working_dir, 'model_checkpoint', params)
     print("BEST VAL RESULTS (EPOCH %d): "%best_acc_epoch, best_acc)
+
+
     return train_obj_vals, train_inf_obj_vals, train_results, val_results
 
 
@@ -459,6 +493,9 @@ if __name__ == '__main__':
         pairs = [(0,1), (1,2), (2,3), (3,4)]
     else:
         pairs = None
+
+    #import pdb; pdb.set_trace()
+
     if args.save_data:
         print("PROCESSING TRAINING DATA...")
         train_data = WordsDataset(args.data_directory, TRAIN, pairs, args.data_size, save=True)
@@ -474,6 +511,8 @@ if __name__ == '__main__':
         if args.test:
             print("LOADING TEST DATA...")
             test_data = WordsDataset(args.data_directory, TEST, pairs, 'full', load=args.load_data)
+    
+
     if args.model in ['struct', 'gspen']:
         pair_model = PairModel(params, None)
 
@@ -521,6 +560,7 @@ if __name__ == '__main__':
         model.load_unary_t(args.pretrain_unary_t)
     print(model)
     
+    #import pdb; pdb.set_trace()
     if args.test:
         print("TESTING ON TRAINING DATA...")
         train_char_acc, train_word_acc = test(model, train_data, params)
