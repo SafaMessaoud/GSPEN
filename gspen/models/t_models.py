@@ -203,14 +203,14 @@ class TModelV1(nn.Module):
 
     def forward(self, beliefs, pots, inputs=None):
         if self.use_t_input:
-            t_part = self.t_model(beliefs, pots, inputs)
+            t_part = self.t_model(beliefs.squeeze(), pots, inputs)
         else:
             if self.no_t_pots:
                 inputs = beliefs
             else:
-                inputs = torch.cat([beliefs, pots], dim=1)
+                inputs = torch.cat([beliefs.squeeze(), pots], dim=1)
             t_part = self.t_model(inputs).squeeze()
-        return (beliefs*pots).sum(dim=1) + t_part
+        return (beliefs.squeeze()*pots).sum(dim=1) + t_part
 
 
 class TModelV2(nn.Module):
@@ -335,6 +335,7 @@ class MLPTModel(nn.Module):
         self.model = nn.Sequential(*layers)
 
     def forward(self, inp):
+        #import pdb; pdb.set_trace() 
         return self.model(inp).squeeze()
 
 LinearTModel = lambda size, params: nn.Linear(size, 1)

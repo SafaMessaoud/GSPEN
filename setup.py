@@ -7,7 +7,7 @@ fastmp = Extension('gspen.fastmp.fastmp', sources = ['gspen/fastmp/fastmpmodule.
                     include_dirs = [np.get_include()],
                     libraries = ['pthread'],
                     extra_compile_args = ['-W', '-fopenmp', '-O3', '-pedantic', '-std=c++0x', '-DWHICH_FUNC=1'],
-                    extra_link_args=['-lgomp', '-lirc'])
+                    extra_link_args=['-lgomp'])
 
 if "GUROBI_HOME" in os.environ:
     ilpinf = Extension('gspen.fastmp.ilpinf', sources = ['gspen/fastmp/ilpinf.cpp'],
@@ -39,5 +39,5 @@ else:
         packages=find_packages(),
         python_requires='>=3.5',
         #install_requires
-        ext_modules=[fastmp, ilpinf, fwlpinf],
+        ext_modules=[fastmp],
     )

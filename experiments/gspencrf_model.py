@@ -9,9 +9,10 @@ except:
     has_ilpinf = False
 
 
-class GSPENModel(nn.Module):
+
+class GSPENCRFModel(nn.Module):
     def __init__(self, unary_model, pair_model, t_model, num_nodes, pairs, num_vals, params):
-        super(GSPENModel, self).__init__()
+        super(GSPENCRFModel, self).__init__()
         self.unary_model = unary_model
         self.pair_model = pair_model
         self.combined_pots = self.pair_model is None
@@ -20,7 +21,7 @@ class GSPENModel(nn.Module):
         self.pairs = pairs
         self.num_vals = num_vals
         self.num_unary = self.num_nodes*self.num_vals
-        self.num_pair = len(pairs)*num_vals*num_vals
+        self.num_pair = 0#len(pairs)*num_vals*num_vals
         self.num_inf_itrs = params.get('num_inf_itrs', 100)
         self.inf_lr = params.get('inf_lr', 0.05)
         self.use_sqrt_decay = params.get('use_sqrt_decay', False)
@@ -31,7 +32,6 @@ class GSPENModel(nn.Module):
         self.gpu = params.get('gpu', False)
         self.use_loss_aug = params.get('use_loss_aug', False)
         self.use_recall_loss_aug = params.get('use_recall_loss_aug', False)
-        self.inf_mode = params.get('inf_mode')
         self.mp_eps = params.get('mp_eps', 0.)
         self.mp_itrs = params.get('mp_itrs')
         self.gt_belief_interpolate = params.get('gt_belief_interpolate', -1)
@@ -57,31 +57,8 @@ class GSPENModel(nn.Module):
         else:
             self.tensor_mod = torch
         batch_size = params['batch_size']
-        self.num_potentials = num_nodes*num_vals + num_vals*num_vals*len(pairs)
-
-
-        if self.inf_mode == 'lp':
-            if not has_ilpinf:
-                raise ValueError('Inference Mode %s is only valid if this library is installed while a valid Gurobi install is present.'%self.inf_mode)
-            self.inf_runners = [ilpinf.ILPInf(num_nodes, num_vals, pairs, np.zeros(self.num_potentials, dtype=np.float32), True) for _ in range(batch_size)]
-        elif self.inf_mode in ['mp', 'md']:
-            if self.inf_mode == 'md':
-                if self.mp_eps == 0:
-                    self.mp_eps = 1.
-            self.inf_runners = [fastmp.FastMP(num_nodes, num_vals, pairs, np.zeros(self.num_potentials, dtype=np.float32)) for _ in range(batch_size)]
-            self.num_msgs = self.inf_runners[0].get_num_msgs()
-            self.msgs = torch.FloatTensor(batch_size, self.num_msgs)
-            for idx, mp_graph in enumerate(self.inf_runners):
-                mp_graph.allocate_mp_mem(self.mp_eps)
-                mp_graph.update_msgs(self.msgs[idx, :].numpy())
-        else:
-            raise Exception("Inf mode not recognized: ",self.inf_mode)
-
-        self.beliefs = torch.FloatTensor(batch_size, self.num_potentials).fill_(0.)
-        if self.gpu:
-            self.beliefs.pin_memory()
-        for idx, inf_runner in enumerate(self.inf_runners):
-            inf_runner.update_beliefs_pointer(self.beliefs[idx, :].numpy())
+        self.num_potentials = num_nodes*num_vals #+ num_vals*num_vals*len(pairs)
+        self.soft = nn.Softmax(dim=2)
 
     def get_optimizer(self, params):
         unary_lr = params['unary_lr']
@@ -147,163 +124,39 @@ class GSPENModel(nn.Module):
             beliefs = beliefs.cuda(async=True)
         return beliefs
 
-    def _run_inf_runners(self, inf_runners):
-        if self.inf_mode == 'lp':
-            ilpinf.runilp(inf_runners)
-        elif self.inf_mode in ['mp', 'md']:
-            self.msgs[:len(inf_runners), :].fill_(0.)
-            fastmp.runmp(inf_runners, self.mp_itrs, self.mp_eps)
-            fastmp.update_beliefs(inf_runners, self.mp_eps)
+    def _find_predictions(self, is_test, epoch, inputs, pots_una, pots_pair, lossaug, labels, belief_masks=None, nodes=None, pairs=None, init_predictions=None, msgs=None, log_callback=None):
+        
+        pots_pair_t = torch.transpose(pots_pair, 1, 2)
 
-    def _find_predictions(self, is_test, epoch, inputs, pots, lossaug, labels, belief_masks=None, nodes=None, pairs=None, init_predictions=None, msgs=None, log_callback=None):
-        if self.inf_mode == 'md':
-            return self._md_inf(is_test, inputs, pots, lossaug, labels, epoch, belief_masks, nodes, pairs)
-        else:
-            return self._fw_inf(is_test, inputs, pots, lossaug, labels, epoch, nodes, pairs, log_callback=log_callback)
+        const_lambda = 0.1
 
-    def calculate_pots(self, inp, belief_labels):
-        if self.combined_pots:
-            return self.pot_scaling_factor*self.unary_model(inp)
-        else:
-            return self.pot_scaling_factor*torch.cat([self.unary_model(inp), self.pair_model(inp)], dim=1)
+        #A = torch.matmul(pots_pair, pots_pair_t) + const_lambda * torch.eye(26*5).cuda()
+        A = torch.eye(26*5).cuda()
+
+        # solve linear system
+        prediction, _ = torch.gesv(pots_una.unsqueeze(-1), A) 
+        prediction = prediction.view(-1, 5, 26)
+        prediction = self.soft(prediction).view(-1, 5*26)
+
+        return prediction, 0 
+
+
+    
+
+    def calculate_pots_(self, inp, belief_labels):
+        una = self.unary_model(inp)
+        pair = self.pair_model(inp).view(-1,5*26,32)
+        
+        return una, pair
 
     def _call_t(self, predictions, pots, inputs):
         if self.use_t_input:
             return self.t_model(predictions, pots, inputs)
         else:
             return self.t_model(predictions, pots)
-    
-    #@profile
-    def _md_inf(self, is_test, inputs, pots, lossaug, labels, epoch, belief_masks, nodes, pairs):
-        lr = self.inf_lr
-        if self.use_sqrt_decay or self.use_linear_decay:
-            start_lr = lr
-        prediction = self.get_random_beliefs(len(inputs), nodes, pairs)
-        pots = pots.detach()
-        pots.requires_grad=False
-        if belief_masks is not None:
-            if pots.size(1) != belief_masks.size(1):
-                pots = torch.cat([pots, self.tensor_mod.FloatTensor(pots.size(0), belief_masks.size(1) - pots.size(1))], dim=1)
-            pots = pots * belief_masks
-            prediction = prediction*belief_masks
-            #TODO: initialize inf runners for this batch
-        else:
-            inf_runners = self.inf_runners[:pots.size(0)]
-        prev_obj = self.tensor_mod.FloatTensor(inputs.size(0)).fill_(-float('inf'))
-        region_prediction_eps = float('inf')
-        prev_unary_pred = prediction[:, :self.num_vals*self.num_nodes].contiguous()
-        prev_pair_pred = prediction[:, self.num_vals*self.num_nodes:].contiguous()
-        for itr in range(self.num_inf_itrs):
-            self.t_model.zero_grad()
-            pred_var = torch.autograd.Variable(prediction, requires_grad=True)
-            vector_obj = self._call_t(pred_var, pots, inputs)
-            if lossaug is not None:
-                vector_obj = vector_obj + (pred_var*lossaug).sum(dim=1)
-            if self.use_entropy:
-                vector_obj = vector_obj - self.entropy_coef*(pred_var*torch.log(pred_var+1e-6)).sum(dim=1)
-            eps = torch.abs(vector_obj - prev_obj).max().item()
-            if self.inf_eps is not None and eps < self.inf_eps:
-                break
-            prev_obj = vector_obj.detach()
-            obj = vector_obj.sum()
-            obj.backward()
-            if self.use_sqrt_decay:
-                lr = self.inf_lr/np.sqrt(itr+1)
-            elif self.use_linear_decay:
-                lr = self.inf_lr/(itr+1)
-            if self.gpu:
-                lr = torch.cuda.FloatTensor([lr])
-            grad = pred_var.grad
-            inf_coef = (1 + torch.log(prediction+1e-6) + lr*grad)
-            inf_coef = inf_coef.cpu()
-            for inf_runner_ind, inf_runner in enumerate(inf_runners):
-                graph_coef = inf_coef[inf_runner_ind, :].numpy()
-                inf_runner.update_potentials(graph_coef)
-            self._run_inf_runners(inf_runners)
-            prediction = self.beliefs[:pots.size(0), :]
-            if self.gpu:
-                prediction = prediction.cuda(async=True)
-            if self.inf_region_eps is not None:
-                new_unary_pred = prediction[:, :self.num_vals*self.num_nodes].contiguous()
-                new_pair_pred = prediction[:, self.num_vals*self.num_nodes:].contiguous()
-                unary_prediction_eps = torch.norm(prev_unary_pred.view(-1, self.num_vals) - new_unary_pred.view(-1, self.num_vals), dim=1).max().item()
-                pair_prediction_eps = torch.norm(prev_pair_pred.view(-1, self.num_vals*self.num_vals) - new_pair_pred.view(-1, self.num_vals*self.num_vals), dim=1).max().item()
-                if unary_prediction_eps < self.inf_region_eps and pair_prediction_eps < self.inf_region_eps:
-                    break
-                prev_unary_pred = new_unary_pred
-                prev_pair_pred = new_pair_pred
-
-        return prediction, itr
-
-    #@profile
-    def _fw_inf(self, is_test, inputs, pots, lossaug, labels, epoch, nodes, pairs, log_callback=None):
-        lr = self.inf_lr
-        if self.use_sqrt_decay or self.use_linear_decay:
-            start_lr = lr
-
-        prediction = self.get_random_beliefs(len(inputs), nodes, pairs)
-
-        pots = pots.detach()
-        pots.requires_grad=False
-        inf_runners = self.inf_runners[:pots.size(0)]
-        if self.inf_region_eps is not None:
-            prev_pred = prediction.clone()
-
-        self.t_model.zero_grad()
-        pred_var = torch.autograd.Variable(prediction, requires_grad=True)
-        obj = self._call_t(pred_var, pots, inputs)
-        if lossaug is not None:
-            obj = obj + (lossaug*pred_var).sum(dim=1)
-        if self.use_entropy:
-            obj = obj - self.entropy_coef*(pred_var*torch.log(pred_var+1e-6)).sum(dim=1)
-        prev_obj = obj.data
-        breaking=False
-        for itr in range(self.num_inf_itrs):
-            if log_callback is not None:
-                log_callback(itr, obj[0].item())
-            obj = obj.sum()
-            obj.backward()
-            grad = pred_var.grad
-            for inf_runner_ind, inf_runner in enumerate(inf_runners):
-                graph_grad = grad[inf_runner_ind, :].data.cpu().numpy()
-                inf_runner.update_potentials(graph_grad)
-            
-            self._run_inf_runners(inf_runners)
-
-            if self.gpu:
-                max_p = self.beliefs[:inputs.size(0),:].cuda(async=True)
-            else:
-                max_p = self.beliefs[:inputs.size(0),:]
-            if self.use_sqrt_decay:
-                lr = self.inf_lr/np.sqrt(itr+1)
-            elif self.use_linear_decay:
-                lr = self.inf_lr/(itr+1)
-            if self.gpu:
-                lr = torch.cuda.FloatTensor([lr])
-            prediction = prediction + lr*(max_p - prediction)
-
-            self.t_model.zero_grad()
-            pred_var = torch.autograd.Variable(prediction, requires_grad=True)
-            obj = self._call_t(pred_var, pots, inputs)
-            if lossaug is not None:
-                obj = obj + (lossaug*pred_var).sum(dim=1)
-            if self.use_entropy:
-                obj = obj - self.entropy_coef*(pred_var*torch.log(pred_var+1e-6)).sum(dim=1)
-            eps = torch.abs(obj.data - prev_obj).max().item()
-            if self.inf_eps is not None and eps < self.inf_eps:
-                breaking=True
-                break
-            if self.inf_region_eps is not None:
-                region_eps = torch.abs(prev_pred - prediction).max().item()
-                if region_eps < self.inf_region_eps:
-                    break
-                prev_pred = prediction.clone()
 
 
-            prev_obj = obj.data
-        return prediction, itr
-
-    def _get_loss_aug(self, belief_labels):
+    def _get_loss_aug(self, belief_labels): 
         if self.gpu:
             loss_aug = torch.cuda.FloatTensor(belief_labels.size(0), belief_labels.size(1)).fill_(0.)
         else:
@@ -314,7 +167,7 @@ class GSPENModel(nn.Module):
 
     #@profile
     def calculate_obj(self, epoch, inputs, belief_labels, belief_masks=None, nodes=None, pairs=None, init_predictions=None, messages=None):
-        if self.ignore_unary_dropout:
+        if self.ignore_unary_dropout:     
             self.unary_model.eval()
         else:
             self.unary_model.train()
@@ -327,8 +180,15 @@ class GSPENModel(nn.Module):
             lossaug = self._get_recall_loss_aug(belief_labels)
         else:
             lossaug = None
-        pots = self.calculate_pots(inputs, belief_labels)
-        predictions, num_iters = self._find_predictions(False, epoch, inputs, pots, lossaug, belief_labels, belief_masks, nodes, pairs, init_predictions=init_predictions, msgs=messages)
+        
+        #import pdb; pdb.set_trace()
+        #pots_una, pots_pair = self.calculate_pots(inputs, belief_labels)
+        pots_una, pots_pair_emb = self.calculate_pots_(inputs, belief_labels)
+        
+        
+        #pots = torch.cat([pots_una, pots_pair], dim=1)
+
+        predictions, num_iters = self._find_predictions(False, epoch, inputs, pots_una, pots_pair_emb, lossaug, belief_labels, belief_masks, nodes, pairs, init_predictions=init_predictions, msgs=messages)
         self.t_model.zero_grad()
         self.unary_model.zero_grad()
         self.unary_model.train()
@@ -336,29 +196,31 @@ class GSPENModel(nn.Module):
             self.pair_model.zero_grad()
             self.pair_model.train()
         self.t_model.train()
-        inf_obj = self._call_t(predictions, pots, inputs)
+        inf_obj = self._call_t(predictions, pots_una, inputs)
         if lossaug is not None:
-            inf_obj = inf_obj + (predictions*lossaug).sum(dim=1)
+            inf_obj = inf_obj + (predictions.squeeze()*lossaug).sum(dim=1)
         if self.use_entropy:
             inf_obj = inf_obj - self.entropy_coef*(predictions*torch.log(predictions+1e-6)).sum(dim=1)
-        label_term = self._call_t(belief_labels, pots, inputs)
+        label_term = self._call_t(belief_labels, pots_una, inputs)
         obj = inf_obj - label_term
         if self.use_relu:
             obj = nn.ReLU()(obj)
         obj = obj.mean()
+
+        #import pdb; pdb.set_trace() 
             
         if self.return_all_vals:
             return obj, inf_obj.mean(), label_term.mean(), num_iters
         else:
-            return obj, inf_obj.sum()/pots.size(0)
+            return obj, inf_obj.sum()/pots_una.size(0)
 
     def calculate_beliefs(self, inputs, labels=None):
         self.unary_model.eval()
         if not self.combined_pots:
             self.pair_model.eval()
         self.t_model.eval()
-        pots = self.calculate_pots(inputs, labels)
-        result, _ = self._find_predictions(True, None, inputs, pots, None, labels)
+        pots_una, pots_pair = self.calculate_pots(inputs, labels)
+        result, _ = self._find_predictions(True, None, inputs, pots_una, pots_pair, None, labels)
         return result
 
     def predict(self, inputs, labels=None, log_callback=None):
@@ -366,8 +228,10 @@ class GSPENModel(nn.Module):
         if not self.combined_pots:
             self.pair_model.eval()
         self.t_model.eval()
-        pots = self.calculate_pots(inputs, labels)
-        return self._find_predictions(True, None, inputs, pots, None, labels, log_callback=log_callback)[0][:,:self.num_nodes*self.num_vals].contiguous().view(-1, self.num_vals).argmax(dim=1).view(-1, self.num_nodes)
+        pots_una, pots_pair = self.calculate_pots_(inputs, labels)
+        
+        predictions = self._find_predictions(True, None, inputs, pots_una, pots_pair, None, labels, log_callback=log_callback)[0][:,:self.num_nodes*self.num_vals].contiguous().view(-1, self.num_vals).argmax(dim=1).view(-1, self.num_nodes)
+        return predictions
 
     def save_unary(self, file_path):
         with open(file_path, "wb") as fout:
@@ -388,6 +252,7 @@ class GSPENModel(nn.Module):
             torch.save(result, fout)
 
     def load_pair(self, file_path):
+        #import pdb; pdb.set_trace()
         with open(file_path, "rb") as fin:
             if not self.gpu:
                 params = torch.load(fin, map_location='cpu')

@@ -47,7 +47,7 @@ PRETRAIN_UNARY="${WORKING_DIR}/struct/unary_model"
 PRETRAIN_PAIR="${WORKING_DIR}/struct/pair_model"
 RESULTS_DIR="${WORKING_DIR}spen/"
 STRUCT_PARAMS="--unary_num_layers 3 --unary_hidden_size 200 --use_separate_pairs"
-TRAINING_PARAMS="--num_epochs 1000 --batch_size 128 --clip_grad_norm 1. --unary_lr 0 --pair_lr 0 --t_lr 1e-4 --use_adam --gpu --unary_dropout 0.5"
+TRAINING_PARAMS="--num_epochs 2000 --batch_size 128 --clip_grad_norm 1. --unary_lr 0 --pair_lr 0 --t_lr 1e-4 --use_adam --gpu --unary_dropout 0.5"
 PRETRAIN_ARGS="--pretrain_unary $PRETRAIN_UNARY --pretrain_pair $PRETRAIN_PAIR"
 INF_PARAMS="--inf_mode md --mp_eps 1. --mp_itrs 10 --num_inf_itrs 100 --inf_lr 1. --use_sqrt_decay --inf_eps 1e-4 --use_loss_aug --use_entropy"
 MODEL_PARAMS="$STRUCT_PARAMS --t_version full_t_v1 --t_unary mlp --t_num_layers 2 --t_hidden_size 1000 --t_use_softplus"
@@ -55,3 +55,20 @@ mkdir -p $RESULTS_DIR
 CUDA_VISIBLE_DEVICES=$GPU python -u experiments/train_words.py gspen small $DATA_DIR $RESULTS_DIR $TRAINING_PARAMS $INF_PARAMS $MODEL_PARAMS $PRETRAIN_ARGS |& tee "${RESULTS_DIR}results.txt"
 TEST_PRETRAIN_ARGS="--pretrain_unary ${RESULTS_DIR}unary_model --pretrain_t ${RESULTS_DIR}t_model --pretrain_pair ${RESULTS_DIR}pair_model"
 CUDA_VISIBLE_DEVICES=$GPU python -u experiments/train_words.py gspen small $DATA_DIR $RESULTS_DIR $INF_PARAMS $MODEL_PARAMS $TRAINING_PARAMS --test $TEST_PRETRAIN_ARGS |& tee "${RESULTS_DIR}test_results.txt"
+
+
+
+# GSPEN_CRF
+PRETRAIN_UNARY="${WORKING_DIR}/struct/unary_model"
+PRETRAIN_PAIR="${WORKING_DIR}/struct/pair_model"
+RESULTS_DIR="${WORKING_DIR}spen/" 
+STRUCT_PARAMS="--unary_num_layers 3 --unary_hidden_size 200 --use_separate_pairs"
+TRAINING_PARAMS="--num_epochs 2000 --batch_size 128 --clip_grad_norm 1. --unary_lr 0 --pair_lr 0 --t_lr 1e-4 --use_adam --gpu --unary_dropout 0.5"
+PRETRAIN_ARGS="--pretrain_unary $PRETRAIN_UNARY"
+INF_PARAMS="--mp_eps 1. --mp_itrs 10 --num_inf_itrs 100 --inf_lr 1. --use_sqrt_decay --inf_eps 1e-4 --use_loss_aug --use_entropy"
+MODEL_PARAMS="$STRUCT_PARAMS --t_version full_t_v1 --t_unary mlp --t_num_layers 2 --t_hidden_size 1000 --t_use_softplus"
+mkdir -p $RESULTS_DIR
+CUDA_VISIBLE_DEVICES=$GPU python -u ./experiments/train_words.py gspen_crf small $DATA_DIR $RESULTS_DIR $TRAINING_PARAMS $INF_PARAMS $MODEL_PARAMS $PRETRAIN_ARGS |& tee "${RESULTS_DIR}results.txt"
+TEST_PRETRAIN_ARGS="--pretrain_unary ${RESULTS_DIR}unary_model --pretrain_t ${RESULTS_DIR}t_model --pretrain_pair ${RESULTS_DIR}pair_model"
+CUDA_VISIBLE_DEVICES=$GPU python -u experiments/train_words.py gspen_crf small $DATA_DIR $RESULTS_DIR $INF_PARAMS $MODEL_PARAMS $TRAINING_PARAMS --test $TEST_PRETRAIN_ARGS |& tee "${RESULTS_DIR}test_results.txt"
+

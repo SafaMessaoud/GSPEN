@@ -11,7 +11,15 @@ import torch.optim.lr_scheduler
 import torch.cuda
 import argparse, os, sys
 import time
-from gspen.models import *
+from logger import Logger 
+from gspen.models.gspen_model import *
+from gspen.models.spen_model import *
+from gspen.models.struct_model import *
+from gspen.models.t_models import *
+from gspen.models.unary_model import *
+from gspencrf_model import *
+
+
 
 np.random.seed(1)
 torch.manual_seed(1)
@@ -175,6 +183,30 @@ class WordsUnaryModel(nn.Module):
         return self.model(inputs).view(inputs.size(0), -1)
 
 
+class PairEmbModel(nn.Module):
+    def __init__(self, params): 
+        super(PairEmbModel, self).__init__()
+        num_layers = params.get('unary_num_layers', 2)
+        hidden_size = params.get('unary_hidden_size', 28*28)
+        dropout = params.get('unary_dropout')
+        layers = []
+        layers.append(nn.Linear(28*28, hidden_size))
+        layers.append(nn.ReLU())
+
+        #import pdb; pdb.set_trace()
+        for layer in range(num_layers-2):
+            if dropout is not None:
+                layers.append(nn.Dropout(dropout))
+            layers.append(nn.Linear(hidden_size, hidden_size))
+            layers.append(nn.ReLU())
+        layers.append(nn.Linear(hidden_size, 26*32))
+        self.model = nn.Sequential(*layers)
+
+    def forward(self, inputs):
+        
+        return self.model(inputs.view(-1,784))
+
+
 class PairModel(nn.Module):
     def __init__(self, params, pair_statistics):
         super(PairModel, self).__init__()
@@ -210,7 +242,11 @@ class PairModel(nn.Module):
             else:
                 self.model = torch.nn.Parameter(torch.FloatTensor(26*26).uniform_(-0.5, 0.5))
 
+        #import pdb; pdb.set_trace()
+
     def forward(self, inputs):
+        #import pdb; pdb.set_trace()
+
         if self.use_better_pairs:
             pairs = []
             for i in range(4):
@@ -251,8 +287,13 @@ def test(model, dataset, params):
     else:
         return (char_acc.float()/(num_data*5)).item(), (word_acc.float()/num_data).item()
 
-
+#@profile
 def train(model, train_data, val_data, params):
+    print('____training_____')
+    # loggers
+    logger = Logger('./logs/'+ params['model'])
+
+    #############################################################
     gpu = params.get('gpu', False)
     batch_size = params.get('batch_size', 1000)
     training_scheduler = params.get('training_scheduler', None)
@@ -280,14 +321,22 @@ def train(model, train_data, val_data, params):
     best_word_acc = (0,0)
     best_word_acc_epoch = 0
     best_acc_epoch = -1
+    counter = 0
+
     for epoch in range(num_epochs):
         print("EPOCH", epoch+1, (end-start))
         if epoch%val_interval == 0:
             if epoch >= val_start:
                 train_results.append(test(model, train_data, params))
                 print("TRAIN RESULTS: ",train_results[-1])
+                logger.scalar_summary('train_char_acc', train_results[-1][0], epoch)
+                logger.scalar_summary('train_word_acc', train_results[-1][1], epoch)
+
                 val_results.append(test(model, val_data, params))
                 print("VAL RESULTS: ",val_results[-1])
+                logger.scalar_summary('val_char_acc', val_results[-1][0], epoch)
+                logger.scalar_summary('val_word_acc', val_results[-1][1], epoch)
+
                 if val_results[-1][0] > best_acc[0]:
                     best_acc = val_results[-1]
                     best_acc_epoch = epoch
@@ -315,7 +364,11 @@ def train(model, train_data, val_data, params):
             training_scheduler.step()
         start = time.time() 
         for batch_ind, all_inputs in enumerate(train_data_loader):
+            counter = counter + 1
             inputs, labels, onehot_labels = all_inputs
+
+            #import pdb; pdb.set_trace()
+
             if use_cross_ent:
                 if gpu:
                     inputs = inputs.cuda(async=True)
@@ -325,8 +378,16 @@ def train(model, train_data, val_data, params):
                 if gpu:
                     inputs = inputs.cuda(async=True)
                     onehot_labels = onehot_labels.cuda(async=True)
+
+                
                 obj, inf_obj = model.calculate_obj(epoch, inputs, onehot_labels)
+
+            
             print("\tBATCH %d OF %d: %f, %f"%(batch_ind+1, len(train_data_loader), obj.item(), inf_obj.item()))
+
+            logger.scalar_summary('obj', obj.item(), counter )
+            logger.scalar_summary('inf_obj', inf_obj.item(), counter )
+            
             obj.backward()
             if clip_grad is not None:
                 nn.utils.clip_grad_value_(model.parameters(), clip_grad)
@@ -336,10 +397,14 @@ def train(model, train_data, val_data, params):
             train_obj_vals.append(obj.item())
             train_inf_obj_vals.append(inf_obj.item())
         end = time.time()
+
+    
+
     train_results.append(test(model, train_data, params))
     print("FINAL TRAIN RESULTS: ",train_results[-1])
     val_results.append(test(model, val_data, params))
     print("FINAL VAL RESULTS: ",val_results[-1])
+    
     if val_results[-1][0] > best_acc[0]:
         best_acc = val_results[-1]
         best_acc_epoch = epoch
@@ -350,6 +415,7 @@ def train(model, train_data, val_data, params):
         best_word_acc_epoch = epoch
         print("NEW BEST WORD ACC FOUND, SAVING MODEL")
         save_model(model, working_dir, 'wordacc_model', params)
+
     print("BEST VAL WORD ACC (EPOCH %d): "%best_word_acc_epoch, best_word_acc)
     save_model(model, working_dir, 'model_checkpoint', params)
     print("BEST VAL RESULTS (EPOCH %d): "%best_acc_epoch, best_acc)
@@ -360,11 +426,11 @@ def save_model(model, path, base_name, params):
     model_path = os.path.join(path, 'unary_%s'%base_name)
     model.save_unary(model_path)
 
-    if params['model'] in ['struct', 'gspen']:
+    if params['model'] in ['struct', 'gspen', 'gspen_crf']:
         model_path = os.path.join(path, 'pair_%s'%base_name)
         model.save_pair(model_path)
 
-    if params['model'] in ['spen', 'gspen']:
+    if params['model'] in ['spen', 'gspen', 'gspen_crf']:
         if params.get('t_version') in ['full_t_v1', 'full_t_v2', 't_v2', 't_v3'] and params['model'] != 'spen':
             model_path = os.path.join(path, 't_%s'%base_name)
             model.save_t(model_path)
@@ -375,7 +441,7 @@ def save_model(model, path, base_name, params):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description = 'Training words models')
-    parser.add_argument('model', choices=['unary', 'struct', 'spen', 'gspen'])
+    parser.add_argument('model', choices=['unary', 'struct', 'spen', 'gspen', 'gspen_crf'])
     parser.add_argument('data_size', choices=['huge', 'lesshuge', 'full', 'small', 'verysmall'])
     parser.add_argument('data_directory')
     parser.add_argument('working_dir')
@@ -455,15 +521,18 @@ if __name__ == '__main__':
     num_vals = 26
     params['num_vals'] = num_vals
 
-    if args.model in ['struct', 'gspen']:
+    if args.model in ['struct', 'gspen']: 
         pairs = [(0,1), (1,2), (2,3), (3,4)]
     else:
         pairs = None
+
+    #import pdb; pdb.set_trace()
+
     if args.save_data:
         print("PROCESSING TRAINING DATA...")
         train_data = WordsDataset(args.data_directory, TRAIN, pairs, args.data_size, save=True)
         print("PROCESSING VALIDATION DATA...")
-        val_data = WordsDataset(args.data_directory, VAL, pairs, args.data_size, save=True)
+        val_data = WordsDataset(args.data_directory, VAL, pairs, args.data_size, save=True) 
         print("DONE.")
         sys.exit(0)
     else:
@@ -474,10 +543,15 @@ if __name__ == '__main__':
         if args.test:
             print("LOADING TEST DATA...")
             test_data = WordsDataset(args.data_directory, TEST, pairs, 'full', load=args.load_data)
+    
+
     if args.model in ['struct', 'gspen']:
         pair_model = PairModel(params, None)
 
-    if args.model in ['spen', 'gspen']:
+    if args.model in ['gspen_crf']:
+        pair_model = PairEmbModel(params)
+
+    if args.model in ['spen', 'gspen', 'gspen_crf']:
         if args.t_unary == 'linear':
             unary_t_constructor = LinearTModel
         elif args.t_unary == 'quad':
@@ -507,6 +581,10 @@ if __name__ == '__main__':
             model = SPENModel(unary_model, t_model, num_nodes, num_vals, params)
         elif args.model == 'gspen':
             model = GSPENModel(unary_model, pair_model, t_model, num_nodes, pairs, num_vals, params)
+        elif args.model == 'gspen_crf':
+            model = GSPENCRFModel(unary_model, pair_model, t_model, num_nodes, pairs, num_vals, params)
+
+
     elif args.model == 'unary':
         model = UnaryModel(unary_model, num_nodes, num_vals, params)
     elif args.model == 'struct':
@@ -514,13 +592,15 @@ if __name__ == '__main__':
     if args.pretrain_unary is not None:
         model.load_unary(args.pretrain_unary)
     if args.pretrain_pair is not None:
-        model.load_pair(args.pretrain_pair)
+        import pdb; pdb.set_trace() 
+        model.load_pair(args.pretrain_pair) 
     if args.pretrain_t is not None:
         model.load_t(args.pretrain_t)
     if args.pretrain_unary_t is not None:
         model.load_unary_t(args.pretrain_unary_t)
     print(model)
     
+    #import pdb; pdb.set_trace()
     if args.test:
         print("TESTING ON TRAINING DATA...")
         train_char_acc, train_word_acc = test(model, train_data, params)
@@ -534,4 +614,7 @@ if __name__ == '__main__':
         print("\tVAL:   (%f, %f)"%(val_char_acc, val_word_acc))
         print("\tTEST:  (%f, %f)"%(test_char_acc, test_word_acc))
     else:
+        time_start=time.time()
         train_obj_vals, train_inf_obj_vals, train_scores, val_scores = train(model, train_data, val_data, params)
+        time_end=time.time()
+        print(' train time ', time_end-time_start)
