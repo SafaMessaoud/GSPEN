@@ -291,7 +291,7 @@ def test(model, dataset, params):
 def train(model, train_data, val_data, params):
     print('____training_____')
     # loggers
-    logger = Logger('./logs/'+ params['model'])
+    logger = Logger('./log_pair_lr/logs_una_frozen_pair/'+ params['model'])
 
     #############################################################
     gpu = params.get('gpu', False)
@@ -378,15 +378,17 @@ def train(model, train_data, val_data, params):
                 if gpu:
                     inputs = inputs.cuda(async=True)
                     onehot_labels = onehot_labels.cuda(async=True)
-
                 
+                import pdb; pdb.set_trace()
                 obj, inf_obj = model.calculate_obj(epoch, inputs, onehot_labels)
 
-            
+
             print("\tBATCH %d OF %d: %f, %f"%(batch_ind+1, len(train_data_loader), obj.item(), inf_obj.item()))
 
             logger.scalar_summary('obj', obj.item(), counter )
             logger.scalar_summary('inf_obj', inf_obj.item(), counter )
+            
+            
             
             obj.backward()
             if clip_grad is not None:
@@ -396,6 +398,26 @@ def train(model, train_data, val_data, params):
             opt.step()
             train_obj_vals.append(obj.item())
             train_inf_obj_vals.append(inf_obj.item())
+
+            
+            print("**********************")
+            for tag, value in model.named_parameters():
+                
+                tag = tag.replace('.', '_')  
+                logger.scalar_summary(tag, value.data.cpu().numpy().sum(), counter )
+                
+                #logger.scalar_summary("pair_model_model_0_weight_grad", value.grad.data.cpu().numpy().sum(), counter)
+                #logger.scalar_summary("pair_model_model_0_bias_grad", value.grad.data.cpu().numpy().sum(), counter)
+                #logger.scalar_summary("pair_model_model_3_weight_grad", value.grad.data.cpu().numpy().sum(), counter)
+                #logger.scalar_summary("pair_model_model_3_bias_grad", value.grad.data.cpu().numpy().sum(), counter)
+                #logger.scalar_summary("pair_model_model_5_weight_grad", value.grad.data.cpu().numpy().sum(), counter)
+                #logger.scalar_summary("pair_model_model_5_bias_grad", value.grad.data.cpu().numpy().sum(), counter)
+                #try:
+                #    logger.histo_summary(tag + '/grad', value.grad.data.cpu().numpy(), counter)
+                #except:
+                #    print('tag ', tag) 
+            
+
         end = time.time()
 
     
@@ -589,10 +611,11 @@ if __name__ == '__main__':
         model = UnaryModel(unary_model, num_nodes, num_vals, params)
     elif args.model == 'struct':
         model = StructModel(unary_model, pair_model, num_nodes, pairs, num_vals, params)
+    
+    import pdb; pdb.set_trace()
     if args.pretrain_unary is not None:
         model.load_unary(args.pretrain_unary)
     if args.pretrain_pair is not None:
-        import pdb; pdb.set_trace() 
         model.load_pair(args.pretrain_pair) 
     if args.pretrain_t is not None:
         model.load_t(args.pretrain_t)
@@ -600,7 +623,7 @@ if __name__ == '__main__':
         model.load_unary_t(args.pretrain_unary_t)
     print(model)
     
-    #import pdb; pdb.set_trace()
+    #import pdb; pdb.set_trace() 
     if args.test:
         print("TESTING ON TRAINING DATA...")
         train_char_acc, train_word_acc = test(model, train_data, params)

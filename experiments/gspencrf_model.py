@@ -77,6 +77,9 @@ class GSPENCRFModel(nn.Module):
         pair_mom = params.get('pair_mom', 0)
         unary_t_mom = params.get('t_unary_mom', 0)
         t_mom = params.get('t_mom', 0)
+
+        #import pdb; pdb.set_trace()
+
         if self.combined_pots:
             param_groups = [{'params':self.unary_model.parameters(), 'lr':combined_lr, 'weight_decay':combined_wd}]
         else:
@@ -127,17 +130,27 @@ class GSPENCRFModel(nn.Module):
     def _find_predictions(self, is_test, epoch, inputs, pots_una, pots_pair, lossaug, labels, belief_masks=None, nodes=None, pairs=None, init_predictions=None, msgs=None, log_callback=None):
         
         pots_pair_t = torch.transpose(pots_pair, 1, 2)
-
         const_lambda = 0.1
-
-        #A = torch.matmul(pots_pair, pots_pair_t) + const_lambda * torch.eye(26*5).cuda()
-        A = torch.eye(26*5).cuda()
-
+        A_1 = torch.matmul(pots_pair, pots_pair_t) 
+        A_2 = const_lambda * torch.eye(26*5).cuda()
+        A = A_1 + A_2 
+        '''
+        A =  torch.eye(26*5).cuda()
+        '''
+        #import pdb; pdb.set_trace()
         # solve linear system
         prediction, _ = torch.gesv(pots_una.unsqueeze(-1), A) 
-        prediction = prediction.view(-1, 5, 26)
-        prediction = self.soft(prediction).view(-1, 5*26)
 
+        #print('una ', pots_una[0] )
+        #print('prediction ', prediction[0] )
+
+        prediction = prediction.view(-1, 5, 26)
+        prediction = self.soft(prediction)
+
+        print(prediction[0,0]) 
+
+        prediction = prediction.view(-1, 5*26)
+        
         return prediction, 0 
 
 

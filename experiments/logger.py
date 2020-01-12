@@ -45,18 +45,19 @@ class Logger(object):
         
     def histo_summary(self, tag, values, step, bins=1000):
         """Log a histogram of the tensor of values."""
-
+        print('check0')
         # Create a histogram using numpy
         counts, bin_edges = np.histogram(values, bins=bins)
 
         # Fill the fields of the histogram proto
-        hist = tf.HistogramProto()
+        hist = tf.compat.v1.HistogramProto()
         hist.min = float(np.min(values))
         hist.max = float(np.max(values))
         hist.num = int(np.prod(values.shape))
         hist.sum = float(np.sum(values))
         hist.sum_squares = float(np.sum(values**2))
 
+        print('check1')
         # Drop the start of the first bin
         bin_edges = bin_edges[1:]
 
@@ -66,7 +67,13 @@ class Logger(object):
         for c in counts:
             hist.bucket.append(c)
 
+        print('check2')
         # Create and write Summary
-        summary = tf.Summary(value=[tf.Summary.Value(tag=tag, histo=hist)])
+        try:
+            summary = tf.Summary(value=[tf.Summary.Value(tag=tag, histo=hist)])
+        except:
+            import pdb; pdb.set_trace()
+        print('check3')
         self.writer.add_summary(summary, step)
         self.writer.flush()
+        

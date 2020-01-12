@@ -45,7 +45,7 @@ CUDA_VISIBLE_DEVICES=$GPU python -u experiments/train_words.py spen small $DATA_
 # GSPEN
 PRETRAIN_UNARY="${WORKING_DIR}/struct/unary_model"
 PRETRAIN_PAIR="${WORKING_DIR}/struct/pair_model"
-RESULTS_DIR="${WORKING_DIR}spen/"
+RESULTS_DIR="${WORKING_DIR}gspen/"
 STRUCT_PARAMS="--unary_num_layers 3 --unary_hidden_size 200 --use_separate_pairs"
 TRAINING_PARAMS="--num_epochs 2000 --batch_size 128 --clip_grad_norm 1. --unary_lr 0 --pair_lr 0 --t_lr 1e-4 --use_adam --gpu --unary_dropout 0.5"
 PRETRAIN_ARGS="--pretrain_unary $PRETRAIN_UNARY --pretrain_pair $PRETRAIN_PAIR"
@@ -59,9 +59,9 @@ CUDA_VISIBLE_DEVICES=$GPU python -u experiments/train_words.py gspen small $DATA
 
 
 # GSPEN_CRF
-PRETRAIN_UNARY="${WORKING_DIR}/struct/unary_model"
+PRETRAIN_UNARY="${WORKING_DIR}/unary/unary_model"
 PRETRAIN_PAIR="${WORKING_DIR}/struct/pair_model"
-RESULTS_DIR="${WORKING_DIR}spen/" 
+RESULTS_DIR="${WORKING_DIR}gspen_crf/" 
 STRUCT_PARAMS="--unary_num_layers 3 --unary_hidden_size 200 --use_separate_pairs"
 TRAINING_PARAMS="--num_epochs 2000 --batch_size 128 --clip_grad_norm 1. --unary_lr 0 --pair_lr 0 --t_lr 1e-4 --use_adam --gpu --unary_dropout 0.5"
 PRETRAIN_ARGS="--pretrain_unary $PRETRAIN_UNARY"
